@@ -1,0 +1,33 @@
+name: Soccer Arbitrage Sniper
+
+on:
+  schedule:
+    # Runs every 2 hours automatically
+    - cron: '0 */2 * * *'
+  workflow_dispatch: # Allows you to click "Run workflow" manually in GitHub
+
+jobs:
+  run-soccer-sniper:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests thefuzz
+
+      - name: Run Soccer Scanner
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python main_soccer.py
