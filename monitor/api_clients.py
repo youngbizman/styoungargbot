@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import time  # <-- ADDED: Needed for rate limiting pauses
 from typing import Any
 import requests
 from requests.adapters import HTTPAdapter
@@ -15,19 +16,22 @@ class ApiClients:
 
     def _build_session(self) -> requests.Session:
         session = requests.Session()
+        # FIXED: Increased retries and backoff time to handle Cloudflare rate limits
         retry = Retry(
-            total=3, connect=3, read=3, backoff_factor=0.5,
+            total=5, connect=5, read=5, backoff_factor=1.0, 
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=frozenset(["GET", "POST"]),
         )
         adapter = HTTPAdapter(max_retries=retry)
         session.mount("https://", adapter)
         session.mount("http://", adapter)
-        session.headers.update({"User-Agent": "arb-bot/2.0"})
+        session.headers.update({"User-Agent": "arb-bot/2.1"})
         return session
 
     def _get_json(self, url: str, params: dict[str, Any] | None = None) -> Any:
-        response = self.session.get(url, params=params, timeout=self.settings.request_timeout_seconds)
+        # FIXED: Forcing a slightly longer timeout just in case Polymarket is being slow
+        timeout_val = getattr(self.settings, 'request_timeout_seconds', 30)
+        response = self.session.get(url, params=params, timeout=timeout_val)
         response.raise_for_status()
         return response.json()
 
@@ -123,6 +127,10 @@ class ApiClients:
                     all_events.extend(events)
                     if len(events) < 100: break
                 else: break
+                
+                # FIXED: Added a brief sleep to prevent the ReadTimeout on heavy pagination
+                time.sleep(0.3)
+                
             except Exception as exc:
                 logger.error(f"MMA Polymarket pagination failed at offset {offset}: {exc}")
                 break
@@ -176,6 +184,10 @@ class ApiClients:
                     all_events.extend(events)
                     if len(events) < 100: break
                 else: break
+                
+                # FIXED: Added a brief sleep to prevent the ReadTimeout on heavy pagination
+                time.sleep(0.3)
+                
             except Exception as exc:
                 logger.error(f"Soccer Polymarket pagination failed at offset {offset}: {exc}")
                 break
