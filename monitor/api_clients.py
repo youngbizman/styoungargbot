@@ -1,15 +1,11 @@
 from __future__ import annotations
 import logging
-import time
+import time  # <-- ADDED: Needed for rate limiting pauses
 from typing import Any
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from decimal import Decimal, getcontext, InvalidOperation
 from .config import Settings
-
-# Set precision high enough to process EVM math (SX Bet uses base-1e20 integers)
-getcontext().prec = 28
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +16,9 @@ class ApiClients:
 
     def _build_session(self) -> requests.Session:
         session = requests.Session()
-        # Retry logic handles 429 (Too Many Requests) automatically
+        # FIXED: Increased retries and backoff time to handle Cloudflare rate limits
         retry = Retry(
-            total=5, connect=5, read=5, backoff_factor=1.0,
+            total=5, connect=5, read=5, backoff_factor=1.0, 
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=frozenset(["GET", "POST"]),
         )
@@ -33,110 +29,26 @@ class ApiClients:
         return session
 
     def _get_json(self, url: str, params: dict[str, Any] | None = None) -> Any:
-        response = self.session.get(url, params=params, timeout=self.settings.request_timeout_seconds)
+        # FIXED: Forcing a slightly longer timeout just in case Polymarket is being slow
+        timeout_val = getattr(self.settings, 'request_timeout_seconds', 30)
+        response = self.session.get(url, params=params, timeout=timeout_val)
         response.raise_for_status()
         return response.json()
 
-    # ==========================================
-    # --- SX BET (ARBITRUM) METHODS ---
-    # ==========================================
-    def get_sxbet_events(self) -> list[dict[str, Any]]:
-        """Maps SX Bet markets to a structure compatible with your existing Polymarket runners."""
-        url = "https://api.sx.bet/markets/active"
-        all_events = []
-        pagination_key = ""
-        
-        for _ in range(20): # Safety limit
-            params = {"pageSize": 50}
-            if pagination_key:
-                params["paginationKey"] = pagination_key
-
-            try:
-                data = self._get_json(url, params=params)
-                if not isinstance(data, dict): break
-                
-                markets = data.get("data", [])
-                
-                # Mapping SX Bet Schema to your standard schema
-                for m in markets:
-                    all_events.append({
-                        "home_team": m.get("homeTeam"),
-                        "away_team": m.get("awayTeam"),
-                        "commence_time": m.get("timestamp"), # Unix timestamp
-                        "market_hash": m.get("marketHash"),
-                        "sport_id": m.get("sportId")
-                    })
-                
-                pagination_key = data.get("nextKey")
-                if not pagination_key: break
-                
-                time.sleep(0.3) # Rate limit protection
-                    
-            except Exception as exc:
-                logger.error(f"SX Bet active markets failed: {exc}")
-                break
-        return all_events
-
-    def get_sxbet_book(self, market_hash: str) -> dict[str, Any]:
-        """Calculates precise odds using base-1e20 math and normalizes to BookLevel."""
-        if not str(market_hash).strip(): return {"asks": [], "bids": [], "timestamp": "0"}
-        
-        url = "https://api.sx.bet/orders"
-        params = {"marketHash": market_hash}
-        
-        try:
-            data = self._get_json(url, params=params)
-            if not isinstance(data, dict): return {"asks": [], "bids": [], "timestamp": "0"}
-            
-            raw_orders = data.get("data", [])
-            normalized_asks = []
-            
-            for order in raw_orders:
-                if order.get("status") != "ACTIVE": continue
-                    
-                try:
-                    # Math: Price Conversion (Base-1e20 -> Decimal Odds)
-                    # 1. Convert base-1e20 integer to probability
-                    maker_implied = Decimal(str(order.get("percentageOdds", "0"))) / Decimal('100000000000000000000')
-                    taker_implied = Decimal('1.0') - maker_implied
-                    
-                    if taker_implied <= Decimal('0.0') or taker_implied >= Decimal('1.0'): continue 
-                        
-                    decimal_odds = Decimal('1.0') / taker_implied
-                    
-                    # Math: Size Conversion (Arbitrum USDC MWei -> Executable USD Volume)
-                    maker_usdc_risk = Decimal(str(order.get("totalBetSize", "0"))) / Decimal('1000000')
-                    odds_multiplier = decimal_odds - Decimal('1.0')
-                    
-                    if odds_multiplier <= Decimal('0.0'): continue
-                        
-                    taker_executable_usdc = maker_usdc_risk / odds_multiplier
-                    taker_volume = taker_executable_usdc.quantize(Decimal('0.01'))
-                    
-                    normalized_asks.append({
-                        "price": str(decimal_odds.quantize(Decimal('0.001'))),
-                        "size": str(taker_volume)
-                    })
-                except InvalidOperation:
-                    continue
-            
-            return {"asks": normalized_asks, "bids": [], "timestamp": "0"}
-            
-        except Exception as exc:
-            logger.warning(f"SX Bet CLOB failed for {market_hash}: {exc}")
-            return {"asks": [], "bids": [], "timestamp": "0"}
-
-    # ==========================================
-    # --- EXISTING POLYMARKET & FIAT METHODS ---
-    # ==========================================
+    # --- NBA METHODS ---
     def get_fiat_data(self) -> list[dict[str, Any]]:
         url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
-        params = {"apiKey": self.settings.odds_api_key, "regions": "eu,us", "markets": "h2h,totals,spreads", "bookmakers": "pinnacle,onexbet"}
+        params = {
+            "apiKey": self.settings.odds_api_key,
+            "regions": "eu,us",
+            "markets": "h2h,totals,spreads",
+            "bookmakers": "pinnacle,onexbet",
+        }
         try:
             data = self._get_json(url, params=params)
             return data if isinstance(data, list) else []
         except Exception as exc:
-            logger.error(f"Odds API failed: {exc}")
+            logger.error(f"Odds API request failed: {exc}")
             return []
 
     def get_polymarket_events(self) -> list[dict[str, Any]]:
@@ -144,11 +56,14 @@ class ApiClients:
         params = {"series_id": 10345, "active": "true", "closed": "false", "limit": 100}
         try:
             data = self._get_json(url, params=params)
-            return data if isinstance(data, list) else data.get("events", [])
+            if isinstance(data, list): return data
+            if isinstance(data, dict): return data.get("events", [])
+            return []
         except Exception as exc:
-            logger.error(f"Polymarket failed: {exc}")
+            logger.error(f"Polymarket request failed: {exc}")
             return []
 
+    # --- SHARED POLYMARKET CLOB METHOD ---
     def get_clob_book(self, token_id: str) -> dict[str, Any]:
         if not str(token_id).strip(): return {"asks": [], "bids": [], "timestamp": "0"}
         url = "https://clob.polymarket.com/book"
@@ -156,12 +71,124 @@ class ApiClients:
         try:
             data = self._get_json(url, params=params)
             if not isinstance(data, dict): return {"asks": [], "bids": [], "timestamp": "0"}
-            return {"asks": data.get("asks", []), "bids": data.get("bids", []), "timestamp": data.get("timestamp", "0")}
+            return {
+                "asks": data.get("asks", []),
+                "bids": data.get("bids", []),
+                "timestamp": data.get("timestamp", "0")
+            }
         except Exception as exc:
-            logger.warning(f"CLOB failed: {exc}")
+            logger.warning(f"CLOB request failed for token {token_id}: {exc}")
             return {"asks": [], "bids": [], "timestamp": "0"}
 
-    # ... (Keep all your existing MMA/Soccer/Telegram methods here) ...
+    # --- SHARED TELEGRAM SENDER ---
+    def send_telegram_alert(self, message: str) -> bool:
+        if not message.strip(): return False
+        url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendMessage"
+        payload = {"chat_id": self.settings.telegram_chat_id, "text": message}
+        try:
+            response = self.session.post(url, json=payload, timeout=self.settings.request_timeout_seconds)
+            response.raise_for_status()
+            return True
+        except Exception as exc:
+            logger.error(f"Telegram send failed: {exc}")
+            return False
 
     def close(self) -> None:
         self.session.close()
+
+    # --- MMA / UFC METHODS ---
+    def get_mma_fiat_data(self) -> list[dict[str, Any]]:
+        url = "https://api.the-odds-api.com/v4/sports/mma_mixed_martial_arts/odds"
+        params = {
+            "apiKey": self.settings.odds_api_key,
+            "regions": "eu,us",
+            "markets": "h2h,totals", 
+            "bookmakers": "pinnacle,onexbet",
+        }
+        try:
+            data = self._get_json(url, params=params)
+            return data if isinstance(data, list) else []
+        except Exception as exc:
+            logger.error(f"MMA Odds API request failed: {exc}")
+            return []
+
+    def get_mma_polymarket_events(self) -> list[dict[str, Any]]:
+        url = "https://gamma-api.polymarket.com/events"
+        all_events = []
+        for offset in range(0, 5000, 100):
+            params = {"active": "true", "closed": "false", "limit": 100, "offset": offset}
+            try:
+                data = self._get_json(url, params=params)
+                if isinstance(data, list): 
+                    all_events.extend(data)
+                    if len(data) < 100: break
+                elif isinstance(data, dict): 
+                    events = data.get("events", [])
+                    all_events.extend(events)
+                    if len(events) < 100: break
+                else: break
+                
+                # FIXED: Added a brief sleep to prevent the ReadTimeout on heavy pagination
+                time.sleep(0.3)
+                
+            except Exception as exc:
+                logger.error(f"MMA Polymarket pagination failed at offset {offset}: {exc}")
+                break
+        return all_events
+
+    # --- SOCCER / FOOTBALL METHODS ---
+    def get_soccer_fiat_data(self) -> list[dict[str, Any]]:
+        leagues = [
+            "soccer_epl",                   # Premier League
+            "soccer_spain_la_liga",         # La Liga
+            "soccer_germany_bundesliga",    # Bundesliga
+            "soccer_italy_serie_a",         # Serie A
+            "soccer_england_championship",  # English Championship
+            "soccer_uefa_champs_league",    # UEFA Champions League
+            "soccer_uefa_europa_league"     # UEFA Europa League
+        ]
+        all_data = []
+        for league in leagues:
+            url = f"https://api.the-odds-api.com/v4/sports/{league}/odds"
+            params = {
+                "apiKey": self.settings.odds_api_key,
+                "regions": "eu,us",
+                "markets": "h2h,totals",  # FIXED: Removed BTTS to prevent 422 error
+                "bookmakers": "pinnacle,onexbet",
+            }
+            try:
+                data = self._get_json(url, params=params)
+                if isinstance(data, list): 
+                    all_data.extend(data)
+            except requests.exceptions.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 404:
+                    logger.info(f"   [INFO] ⚽ {league} is currently inactive (404). Skipping safely...")
+                else:
+                    logger.error(f"Soccer Odds API request failed for {league}: {exc}")
+            except Exception as exc:
+                logger.error(f"Soccer Odds API request failed for {league}: {exc}")
+        return all_data
+
+    def get_soccer_polymarket_events(self) -> list[dict[str, Any]]:
+        url = "https://gamma-api.polymarket.com/events"
+        all_events = []
+        for offset in range(0, 5000, 100):
+            params = {"active": "true", "closed": "false", "limit": 100, "offset": offset}
+            try:
+                data = self._get_json(url, params=params)
+                if isinstance(data, list): 
+                    all_events.extend(data)
+                    if len(data) < 100: break
+                elif isinstance(data, dict): 
+                    events = data.get("events", [])
+                    all_events.extend(events)
+                    if len(events) < 100: break
+                else: break
+                
+                # FIXED: Added a brief sleep to prevent the ReadTimeout on heavy pagination
+                time.sleep(0.3)
+                
+            except Exception as exc:
+                logger.error(f"Soccer Polymarket pagination failed at offset {offset}: {exc}")
+                break
+        return all_events
