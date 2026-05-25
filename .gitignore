@@ -1,0 +1,18 @@
+# Python Virtual Environment
+venv/
+
+# Environment Variables
+.env
+
+# Python Bytecode (Generated files)
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs and Data
+logs/
+data/
+
+# OS Metadata
+.DS_Store
+Thumbs.db

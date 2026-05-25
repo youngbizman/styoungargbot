@@ -1,5 +1,44 @@
 from __future__ import annotations
+import csv
+import os
+import uuid
+from datetime import datetime
 from .models import ArbitrageOpportunity, FiatArbitrageOpportunity
+
+# ==========================================
+# CSV LOGGING FUNCTION
+# ==========================================
+def log_top_opportunities_to_csv(category: str, top_opps: list[dict]):
+    if not top_opps:
+        return
+        
+    # Safely target the data directory
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+    os.makedirs(data_dir, exist_ok=True)
+    
+    csv_file = os.path.join(data_dir, "arbitrage_records.csv")
+    file_exists = os.path.isfile(csv_file)
+    
+    with open(csv_file, mode='a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            # Write headers if file is brand new
+            writer.writerow(['ARB_ID', 'Category', 'Market', 'Matchup', 'GameDate', 'LoggedAt'])
+        
+        for item in top_opps:
+            op = item['obj']
+            # Generate a short, unique ARB ID (e.g., 9A4F-NBA)
+            arb_id = f"{uuid.uuid4().hex[:4].upper()}-{category.upper()}"
+            matchup = f"{op.home_team} vs {op.away_team}"
+            
+            writer.writerow([
+                arb_id,
+                category.upper(),
+                op.market_title,
+                matchup,
+                op.commence_time,
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            ])
 
 # ==========================================
 # NBA ALERT BUILDERS
@@ -11,20 +50,27 @@ def build_global_alerts(poly_opps: list[ArbitrageOpportunity], fiat_opps: list[F
     # Combine and sort all opportunities globally by profit
     all_opps = []
     for o in poly_opps: 
-        all_opps.append({'profit': o.expected_profit_percent, 'msg': format_opportunity_alert(o)})
+        all_opps.append({'profit': o.expected_profit_percent, 'msg': format_opportunity_alert(o), 'obj': o})
     for o in fiat_opps: 
-        all_opps.append({'profit': o.expected_profit_percent, 'msg': format_fiat_opportunity_alert(o)})
+        all_opps.append({'profit': o.expected_profit_percent, 'msg': format_fiat_opportunity_alert(o), 'obj': o})
     
     # Sort from highest profit to lowest
     sorted_opps = sorted(all_opps, key=lambda x: x['profit'], reverse=True)
     
     # Remove duplicates
     unique_messages: dict[str, str] = {}
+    unique_objs = []
     for item in sorted_opps:
         if item['msg'] not in unique_messages:
             unique_messages[item['msg']] = item['msg']
+            unique_objs.append(item)
 
-    return list(unique_messages.values())[:limit]
+    top_items = unique_objs[:limit]
+    
+    # Log to CSV
+    log_top_opportunities_to_csv("NBA", top_items)
+
+    return [item['msg'] for item in top_items]
 
 
 def format_opportunity_alert(op: ArbitrageOpportunity) -> str:
@@ -71,15 +117,23 @@ def build_no_opportunities_message() -> str:
 def build_mma_global_alerts(poly_opps: list[ArbitrageOpportunity], fiat_opps: list[FiatArbitrageOpportunity], limit: int = 3) -> list[str]:
     if limit <= 0: return []
     all_opps = []
-    for o in poly_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_mma_opportunity_alert(o)})
-    for o in fiat_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_mma_fiat_opportunity_alert(o)})
+    for o in poly_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_mma_opportunity_alert(o), 'obj': o})
+    for o in fiat_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_mma_fiat_opportunity_alert(o), 'obj': o})
     sorted_opps = sorted(all_opps, key=lambda x: x['profit'], reverse=True)
     
     unique_messages: dict[str, str] = {}
+    unique_objs = []
     for item in sorted_opps:
         if item['msg'] not in unique_messages:
             unique_messages[item['msg']] = item['msg']
-    return list(unique_messages.values())[:limit]
+            unique_objs.append(item)
+            
+    top_items = unique_objs[:limit]
+    
+    # Log to CSV
+    log_top_opportunities_to_csv("UFC", top_items)
+    
+    return [item['msg'] for item in top_items]
 
 
 def format_mma_opportunity_alert(op: ArbitrageOpportunity) -> str:
@@ -118,15 +172,23 @@ def format_mma_fiat_opportunity_alert(op: FiatArbitrageOpportunity) -> str:
 def build_soccer_global_alerts(poly_opps: list[ArbitrageOpportunity], fiat_opps: list[FiatArbitrageOpportunity], limit: int = 3) -> list[str]:
     if limit <= 0: return []
     all_opps = []
-    for o in poly_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_soccer_opportunity_alert(o)})
-    for o in fiat_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_soccer_fiat_opportunity_alert(o)})
+    for o in poly_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_soccer_opportunity_alert(o), 'obj': o})
+    for o in fiat_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_soccer_fiat_opportunity_alert(o), 'obj': o})
     sorted_opps = sorted(all_opps, key=lambda x: x['profit'], reverse=True)
     
     unique_messages: dict[str, str] = {}
+    unique_objs = []
     for item in sorted_opps:
         if item['msg'] not in unique_messages:
             unique_messages[item['msg']] = item['msg']
-    return list(unique_messages.values())[:limit]
+            unique_objs.append(item)
+            
+    top_items = unique_objs[:limit]
+    
+    # Log to CSV
+    log_top_opportunities_to_csv("SOCCER", top_items)
+    
+    return [item['msg'] for item in top_items]
 
 def format_soccer_opportunity_alert(op: ArbitrageOpportunity) -> str:
     poly_total = op.poly_spend + op.poly_fees
