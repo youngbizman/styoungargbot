@@ -18,8 +18,32 @@ DATA_DIR = os.path.join(
     "data"
 )
 
-OPPORTUNITY_OBSERVATIONS_FILE = "arbitrage_opportunity_observations.csv"
-RAW_DETECTIONS_FILE = "arbitrage_raw_detections.csv"
+OPPORTUNITY_DATA_DIR = os.path.join(DATA_DIR, "opportunities")
+RAW_DATA_DIR = os.path.join(DATA_DIR, "raw_detections")
+
+
+def current_month_file(prefix: str) -> str:
+    month_key = datetime.now(timezone.utc).strftime("%Y-%m")
+    return f"{prefix}_{month_key}.csv"
+
+
+def current_week_file(prefix: str) -> str:
+    year, week_number, _ = datetime.now(timezone.utc).isocalendar()
+    return f"{prefix}_{year}-W{week_number:02d}.csv"
+
+
+def opportunity_observations_file() -> str:
+    return os.path.join(
+        OPPORTUNITY_DATA_DIR,
+        current_month_file("arbitrage_opportunities")
+    )
+
+
+def raw_detections_file() -> str:
+    return os.path.join(
+        RAW_DATA_DIR,
+        current_week_file("arbitrage_raw_detections")
+    )
 
 
 OPPORTUNITY_OBSERVATION_FIELDS = [
@@ -122,13 +146,13 @@ def make_stable_key(*parts) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20].upper()
 
 
-def csv_path(filename: str) -> str:
-    os.makedirs(DATA_DIR, exist_ok=True)
-    return os.path.join(DATA_DIR, filename)
+def ensure_csv_folder(path: str) -> None:
+    folder = os.path.dirname(path)
+    os.makedirs(folder, exist_ok=True)
 
 
-def append_csv_row(filename: str, fieldnames: list[str], row: dict) -> None:
-    path = csv_path(filename)
+def append_csv_row(path: str, fieldnames: list[str], row: dict) -> None:
+    ensure_csv_folder(path)
     file_exists = os.path.isfile(path)
 
     with open(path, mode="a", newline="", encoding="utf-8") as f:
@@ -144,6 +168,7 @@ def append_csv_row(filename: str, fieldnames: list[str], row: dict) -> None:
 # ============================================================
 # PROFITABLE OPPORTUNITY OBSERVATION LOGGER
 # This logs ALL detected profitable opportunities, not only top 3.
+# File is stored monthly.
 # ============================================================
 
 def log_profitable_opportunities_to_csv(
@@ -275,7 +300,7 @@ def log_profitable_opportunities_to_csv(
             continue
 
         append_csv_row(
-            OPPORTUNITY_OBSERVATIONS_FILE,
+            opportunity_observations_file(),
             OPPORTUNITY_OBSERVATION_FIELDS,
             row,
         )
@@ -284,6 +309,7 @@ def log_profitable_opportunities_to_csv(
 # ============================================================
 # RAW DETECTION LOGGER
 # This is for every checked candidate, profitable or not.
+# File is stored weekly.
 # Runner files need to call this inside their scan loops.
 # ============================================================
 
@@ -369,7 +395,7 @@ def log_raw_detection_to_csv(
     }
 
     append_csv_row(
-        RAW_DETECTIONS_FILE,
+        raw_detections_file(),
         RAW_DETECTION_FIELDS,
         row,
     )
@@ -433,11 +459,11 @@ def format_opportunity_alert(op: ArbitrageOpportunity) -> str:
         f"📅 DATE: {op.commence_time}\n"
         f"🎯 MARKET: {op.market_title}\n"
         f"💵 NET PROFIT MARGIN: {op.expected_profit_percent:.2f}%\n\n"
-        f"🛠️ EXECUTION CALCULATOR (${op.total_outlay:.2f} Bankroll):\n"
+        f"🛠️ ANALYSIS SNAPSHOT (${op.total_outlay:.2f} model bankroll):\n"
         f"💰 TARGET PAYOUT ON BOTH SIDES: ${op.shares:.2f}\n"
-        f"▪️ Bet ${op.sportsbook_stake:.2f} on '{op.fiat_selection}' at {op.bookmaker} ({op.odds_decimal:.2f})\n"
-        f"▪️ Enter ${poly_total:.2f} on Poly for '{op.selection_name}'\n\n"
-        f"✅ GUARANTEED NET PROFIT: ${op.locked_profit:.2f}"
+        f"▪️ Fiat side: ${op.sportsbook_stake:.2f} on '{op.fiat_selection}' at {op.bookmaker} ({op.odds_decimal:.2f})\n"
+        f"▪️ Market side amount: ${poly_total:.2f} for '{op.selection_name}'\n\n"
+        f"✅ MODEL NET EDGE: ${op.locked_profit:.2f}"
     )
 
 
@@ -450,11 +476,11 @@ def format_fiat_opportunity_alert(op: FiatArbitrageOpportunity) -> str:
         f"📅 DATE: {op.commence_time}\n"
         f"🎯 MARKET: {op.market_title}\n"
         f"💵 NET PROFIT MARGIN: {op.expected_profit_percent:.2f}%\n\n"
-        f"🛠️ HEDGE CALCULATOR (${(op.stake_1 + op.stake_2):.2f} Bankroll):\n"
+        f"🛠️ ANALYSIS SNAPSHOT (${(op.stake_1 + op.stake_2):.2f} model bankroll):\n"
         f"💰 TARGET PAYOUT ON BOTH SIDES: ${op.payout:.2f}\n"
-        f"▪️ Bet ${op.stake_1:.2f} on '{op.selection_1}' at {op.bookmaker_1} ({op.odds_1:.2f})\n"
-        f"▪️ Bet ${op.stake_2:.2f} on '{op.selection_2}' at {op.bookmaker_2} ({op.odds_2:.2f})\n\n"
-        f"✅ GUARANTEED NET PROFIT: ${net_profit:.2f}"
+        f"▪️ Side 1: ${op.stake_1:.2f} on '{op.selection_1}' at {op.bookmaker_1} ({op.odds_1:.2f})\n"
+        f"▪️ Side 2: ${op.stake_2:.2f} on '{op.selection_2}' at {op.bookmaker_2} ({op.odds_2:.2f})\n\n"
+        f"✅ MODEL NET EDGE: ${net_profit:.2f}"
     )
 
 
@@ -519,12 +545,12 @@ def format_mma_opportunity_alert(op: ArbitrageOpportunity) -> str:
         f"🥋 MATCHUP: {op.home_team} vs {op.away_team}\n"
         f"📅 DATE: {op.commence_time}\n"
         f"💵 NET PROFIT MARGIN: {op.expected_profit_percent:.2f}%\n\n"
-        f"🛠️ EXECUTION CALCULATOR (${op.total_outlay:.2f} Bankroll):\n"
+        f"🛠️ ANALYSIS SNAPSHOT (${op.total_outlay:.2f} model bankroll):\n"
         f"💰 TARGET PAYOUT ON BOTH SIDES: ${op.shares:.2f}\n"
-        f"▪️ Bet ${op.sportsbook_stake:.2f} on '{op.fiat_selection}' at {op.bookmaker} ({op.odds_decimal:.2f})\n"
-        f"▪️ Enter ${poly_total:.2f} on Poly for '{op.selection_name}'\n\n"
-        f"✅ GUARANTEED NET PROFIT: ${op.locked_profit:.2f}\n"
-        f"⚠️ WARNING: DRAW/NC RISK. If fight is a Draw/No Contest, fiat books refund but Poly resolves NO."
+        f"▪️ Fiat side: ${op.sportsbook_stake:.2f} on '{op.fiat_selection}' at {op.bookmaker} ({op.odds_decimal:.2f})\n"
+        f"▪️ Market side amount: ${poly_total:.2f} for '{op.selection_name}'\n\n"
+        f"✅ MODEL NET EDGE: ${op.locked_profit:.2f}\n"
+        f"⚠️ WARNING: Draw/No Contest rules may differ by market source."
     )
 
 
@@ -536,11 +562,11 @@ def format_mma_fiat_opportunity_alert(op: FiatArbitrageOpportunity) -> str:
         f"🥋 MATCHUP: {op.home_team} vs {op.away_team}\n"
         f"📅 DATE: {op.commence_time}\n"
         f"💵 NET PROFIT MARGIN: {op.expected_profit_percent:.2f}%\n\n"
-        f"🛠️ HEDGE CALCULATOR (${(op.stake_1 + op.stake_2):.2f} Bankroll):\n"
+        f"🛠️ ANALYSIS SNAPSHOT (${(op.stake_1 + op.stake_2):.2f} model bankroll):\n"
         f"💰 TARGET PAYOUT ON BOTH SIDES: ${op.payout:.2f}\n"
-        f"▪️ Bet ${op.stake_1:.2f} on '{op.selection_1}' at {op.bookmaker_1} ({op.odds_1:.2f})\n"
-        f"▪️ Bet ${op.stake_2:.2f} on '{op.selection_2}' at {op.bookmaker_2} ({op.odds_2:.2f})\n\n"
-        f"✅ GUARANTEED NET PROFIT: ${net_profit:.2f}"
+        f"▪️ Side 1: ${op.stake_1:.2f} on '{op.selection_1}' at {op.bookmaker_1} ({op.odds_1:.2f})\n"
+        f"▪️ Side 2: ${op.stake_2:.2f} on '{op.selection_2}' at {op.bookmaker_2} ({op.odds_2:.2f})\n\n"
+        f"✅ MODEL NET EDGE: ${net_profit:.2f}"
     )
 
 
@@ -602,11 +628,11 @@ def format_soccer_opportunity_alert(op: ArbitrageOpportunity) -> str:
         f"📅 DATE: {op.commence_time}\n"
         f"🎯 MARKET: {op.market_title}\n"
         f"💵 NET PROFIT MARGIN: {op.expected_profit_percent:.2f}%\n\n"
-        f"🛠️ EXECUTION CALCULATOR (${op.total_outlay:.2f} Bankroll):\n"
+        f"🛠️ ANALYSIS SNAPSHOT (${op.total_outlay:.2f} model bankroll):\n"
         f"💰 TARGET PAYOUT ON BOTH SIDES: ${op.shares:.2f}\n"
-        f"▪️ Bet ${op.sportsbook_stake:.2f} on '{op.fiat_selection}' at {op.bookmaker} ({op.odds_decimal:.2f})\n"
-        f"▪️ Enter ${poly_total:.2f} on Poly for '{op.selection_name}'\n\n"
-        f"✅ GUARANTEED NET PROFIT: ${op.locked_profit:.2f}"
+        f"▪️ Fiat side: ${op.sportsbook_stake:.2f} on '{op.fiat_selection}' at {op.bookmaker} ({op.odds_decimal:.2f})\n"
+        f"▪️ Market side amount: ${poly_total:.2f} for '{op.selection_name}'\n\n"
+        f"✅ MODEL NET EDGE: ${op.locked_profit:.2f}"
     )
 
 
@@ -619,9 +645,9 @@ def format_soccer_fiat_opportunity_alert(op: FiatArbitrageOpportunity) -> str:
         f"📅 DATE: {op.commence_time}\n"
         f"🎯 MARKET: {op.market_title}\n"
         f"💵 NET PROFIT MARGIN: {op.expected_profit_percent:.2f}%\n\n"
-        f"🛠️ HEDGE CALCULATOR (${(op.stake_1 + op.stake_2):.2f} Bankroll):\n"
+        f"🛠️ ANALYSIS SNAPSHOT (${(op.stake_1 + op.stake_2):.2f} model bankroll):\n"
         f"💰 TARGET PAYOUT ON BOTH SIDES: ${op.payout:.2f}\n"
-        f"▪️ Bet ${op.stake_1:.2f} on '{op.selection_1}' at {op.bookmaker_1} ({op.odds_1:.2f})\n"
-        f"▪️ Bet ${op.stake_2:.2f} on '{op.selection_2}' at {op.bookmaker_2} ({op.odds_2:.2f})\n\n"
-        f"✅ GUARANTEED NET PROFIT: ${net_profit:.2f}"
+        f"▪️ Side 1: ${op.stake_1:.2f} on '{op.selection_1}' at {op.bookmaker_1} ({op.odds_1:.2f})\n"
+        f"▪️ Side 2: ${op.stake_2:.2f} on '{op.selection_2}' at {op.bookmaker_2} ({op.odds_2:.2f})\n\n"
+        f"✅ MODEL NET EDGE: ${net_profit:.2f}"
     )
