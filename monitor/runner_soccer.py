@@ -69,6 +69,9 @@ def evaluate_buy_hedge_from_asks(asks, decimal_odds, bankroll="100", fee_rate="0
         return HedgeEstimate(None, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), None, None, Decimal("0"), False, "Empty Orderbook")
 
     best = levels[0]
+    if best.price <= 0:
+        return HedgeEstimate(best.price, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), None, None, Decimal("0"), False, "Invalid Price")
+
     q, cost, fees = Decimal("0"), Decimal("0"), Decimal("0")
     marginal, full_bankroll_supported = None, False
 
@@ -123,6 +126,7 @@ def clean_for_matching(text: str) -> str:
     if not text:
         return ""
     text = unicodedata.normalize("NFKD", str(text)).encode("ASCII", "ignore").decode("utf-8").lower()
+    text = text.replace("-", " ")
     return re.sub(r"[^a-z0-9\s]", "", text)
 
 
@@ -130,18 +134,22 @@ def is_team_match(fiat_team: str, poly_text: str) -> bool:
     if not poly_text:
         return False
 
-    nicknames = {
-        "paris saint germain": "psg",
-        "manchester city": "man city",
-        "manchester united": "man utd",
-        "atletico madrid": "atletico",
-        "tottenham hotspur": "spurs",
+    aliases = {
+        "united states": "usa",
+        "usmnt": "usa",
+        "korea republic": "south korea",
+        "cote divoire": "ivory coast",
+        "czechia": "czech republic",
+        "iran": "ir iran",
+        "dr congo": "congo",
+        "netherlands": "holland",
+        "england": "england",
     }
 
     f_str = clean_for_matching(fiat_team)
     p_str = clean_for_matching(poly_text)
 
-    for full, short in nicknames.items():
+    for full, short in aliases.items():
         if full in f_str:
             f_str = f_str.replace(full, short)
         if full in p_str:
@@ -176,17 +184,25 @@ def run_soccer() -> None:
     clients = ApiClients(settings)
 
     try:
-        logger.info("📡 Initializing Global Soccer Sniper (YES/NO Double-Chance)...")
+        logger.info("📡 Initializing World Cup Soccer Sniper (YES/NO Double-Chance + BTTS + Totals)...")
         logger.info(f"🧾 Run ID: {run_id}")
 
         raw_odds = clients.get_soccer_fiat_data()
         raw_poly = clients.get_soccer_polymarket_events()
 
         fiat_games = {}
-        cutoff_date = datetime.now(timezone.utc) + timedelta(hours=80)
+        now_utc = datetime.now(timezone.utc)
+        cutoff_date = now_utc + timedelta(days=45)
+
+        logger.info(f"   [INFO] Odds API returned {len(raw_odds)} World Cup events.")
+        logger.info(f"   [INFO] Polymarket returned {len(raw_poly)} active events.")
 
         for game in raw_odds:
-            commence_time = datetime.fromisoformat(game.get("commence_time").replace("Z", "+00:00"))
+            commence_raw = game.get("commence_time")
+            if not commence_raw:
+                continue
+
+            commence_time = datetime.fromisoformat(commence_raw.replace("Z", "+00:00"))
             if commence_time > cutoff_date:
                 continue
 
@@ -200,13 +216,13 @@ def run_soccer() -> None:
                 fiat_games[k] = {
                     "home": h,
                     "away": a,
-                    "time": game.get("commence_time"),
+                    "time": commence_raw,
                     "sport_key": game.get("sport_key", "soccer"),
                     "bookies": [],
                 }
 
             for b in game.get("bookmakers", []):
-                b_data = {"name": b.get("title"), "h2h": {}, "totals": {}}
+                b_data = {"name": b.get("title"), "h2h": {}, "totals": {}, "btts": {}}
 
                 for m in b.get("markets", []):
                     mk = m.get("key")
@@ -220,17 +236,24 @@ def run_soccer() -> None:
 
                         elif mk == "totals" and pr is not None and pt is not None:
                             pt_float = float(pt)
-
                             if pt_float not in b_data["totals"]:
                                 b_data["totals"][pt_float] = {}
-
                             b_data["totals"][pt_float][nm.lower()] = Decimal(str(pr))
 
-                fiat_games[k]["bookies"].append(b_data)
+                        elif mk == "btts" and pr is not None:
+                            b_data["btts"][nm.lower()] = Decimal(str(pr))
+
+                if b_data["h2h"] or b_data["totals"] or b_data["btts"]:
+                    fiat_games[k]["bookies"].append(b_data)
+
+        logger.info(f"   [INFO] Built {len(fiat_games)} fiat World Cup games inside 45-day window.")
 
         opportunities, fiat_opportunities = [], []
 
         for gk, x in fiat_games.items():
+            if not x["bookies"]:
+                continue
+
             h_nk, a_nk = x["home"], x["away"]
 
             logger.info(f"\n⚽ MATCHED: {x['home']} vs {x['away']} | Local Time: {format_to_local(x['time'])}")
@@ -292,7 +315,6 @@ def run_soccer() -> None:
                                         roi = calculate_roi(hedge)
                                         passed_roi_filter = 0 < roi < 15.0
                                         was_profitable = hedge.passes_liquidity_filter and passed_roi_filter
-
                                         poly_price = f"${float(hedge.best_ask):.2f}" if hedge.best_ask else "N/A"
 
                                         log_raw_detection_to_csv(
@@ -318,34 +340,20 @@ def run_soccer() -> None:
                                             passed_roi_filter=passed_roi_filter,
                                             was_profitable=was_profitable,
                                             reject_reason="" if was_profitable else str(hedge.reject_reason or "Outside ROI filter"),
-                                            notes="Soccer winner market raw check",
+                                            notes="World Cup winner market raw check",
                                             run_id=run_id,
                                         )
 
                                         logger.info(
-                                            f"   [DC-NO]  {b['name']:<10} | Poly 'NO'  {team_in_q[:7]} | Fiat Win: {float(f_opp):<5.2f} | Poly Ask: {poly_price:<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}"
+                                            f"   [DC-NO]  {b['name']:<10} | Buy Poly: NO {team_in_q[:7]} ({poly_price:<5}) | Bet Fiat: {team_in_q[:7]} Win ({float(f_opp):<4.2f}) | Status: {'✅ ROI ' + str(roi) + '%' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}"
                                         )
 
-                                        if hedge.passes_liquidity_filter and passed_roi_filter:
-                                            opportunities.append(
-                                                _build_opp(
-                                                    x,
-                                                    b["name"],
-                                                    f_opp,
-                                                    hedge,
-                                                    "Fiat Win vs Poly NO",
-                                                    f"NO {team_in_q}",
-                                                    f"{team_in_q} to Win",
-                                                    roi,
-                                                    0.0,
-                                                    0.0,
-                                                )
-                                            )
+                                        if was_profitable:
+                                            opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "Fiat Win vs Poly NO", f"NO {team_in_q}", f"{team_in_q} to Win", roi, 0.0, 0.0))
 
                                 elif out_lbl == "yes":
                                     poly_tok = toks[idx]
                                     opp_nk = a_nk if team_in_q == h_nk else h_nk
-
                                     f_opp = b["h2h"].get(opp_nk)
                                     f_draw = b["h2h"].get("Draw")
 
@@ -359,7 +367,6 @@ def run_soccer() -> None:
                                         roi = calculate_roi(hedge)
                                         passed_roi_filter = 0 < roi < 15.0
                                         was_profitable = hedge.passes_liquidity_filter and passed_roi_filter
-
                                         poly_price = f"${float(hedge.best_ask):.2f}" if hedge.best_ask else "N/A"
 
                                         log_raw_detection_to_csv(
@@ -386,38 +393,79 @@ def run_soccer() -> None:
                                             passed_roi_filter=passed_roi_filter,
                                             was_profitable=was_profitable,
                                             reject_reason="" if was_profitable else str(hedge.reject_reason or "Outside ROI filter"),
-                                            notes="Soccer double chance raw check",
+                                            notes="World Cup double chance raw check",
                                             run_id=run_id,
                                         )
 
                                         logger.info(
-                                            f"   [DC-YES] {b['name']:<10} | Poly 'YES' {team_in_q[:7]} | Fiat DC:  {float(dc_odds):<5.2f} | Poly Ask: {poly_price:<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}"
+                                            f"   [DC-YES] {b['name']:<10} | Buy Poly: YES {team_in_q[:7]} ({poly_price:<5}) | Bet Fiat: Draw or {opp_nk[:7]} ({float(dc_odds):<4.2f}) | Status: {'✅ ROI ' + str(roi) + '%' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}"
                                         )
 
-                                        if hedge.passes_liquidity_filter and passed_roi_filter:
-                                            opportunities.append(
-                                                _build_opp(
-                                                    x,
-                                                    b["name"],
-                                                    dc_odds,
-                                                    hedge,
-                                                    "Fiat Dutched DC vs Poly YES",
-                                                    f"YES {team_in_q}",
-                                                    f"Draw or {opp_nk}",
-                                                    roi,
-                                                    0.0,
-                                                    0.0,
-                                                )
-                                            )
+                                        if was_profitable:
+                                            opportunities.append(_build_opp(x, b["name"], dc_odds, hedge, "Fiat Dutched DC vs Poly YES", f"YES {team_in_q}", f"Draw or {opp_nk}", roi, 0.0, 0.0))
+
+                    elif "both teams" in question and "score" in question:
+                        fiat_yes = b["btts"].get("yes")
+                        fiat_no = b["btts"].get("no")
+
+                        for idx, out_lbl in enumerate(outs):
+                            out_lbl = out_lbl.lower()
+                            poly_tok = toks[idx]
+                            f_opp, poly_side, fiat_side = None, "", ""
+
+                            if out_lbl == "yes" and fiat_no:
+                                f_opp, poly_side, fiat_side = fiat_no, "Yes", "No"
+                            elif out_lbl == "no" and fiat_yes:
+                                f_opp, poly_side, fiat_side = fiat_yes, "No", "Yes"
+
+                            if f_opp:
+                                book = clients.get_clob_book(poly_tok)
+                                hedge = evaluate_buy_hedge_from_asks(book.get("asks", []), f_opp)
+                                roi = calculate_roi(hedge)
+                                passed_roi_filter = 0 < roi < 15.0
+                                was_profitable = hedge.passes_liquidity_filter and passed_roi_filter
+                                poly_price = f"${float(hedge.best_ask):.2f}" if hedge.best_ask else "N/A"
+
+                                log_raw_detection_to_csv(
+                                    category="SOCCER",
+                                    opportunity_type="POLY_FIAT",
+                                    market="Both Teams to Score",
+                                    home_team=x["home"],
+                                    away_team=x["away"],
+                                    game_date=format_to_local(x["time"]),
+                                    bookmaker=b["name"],
+                                    selection=fiat_side,
+                                    odds_decimal=float(f_opp),
+                                    opposite_selection=poly_side,
+                                    opposite_odds_decimal="",
+                                    poly_selection=poly_side,
+                                    poly_best_ask=float(hedge.best_ask or 0),
+                                    poly_vwap=float(hedge.vwap or 0),
+                                    poly_marginal_price=float(hedge.marginal_price or 0),
+                                    total_outlay=float(hedge.total_outlay),
+                                    locked_profit=float(hedge.locked_profit),
+                                    roi_percent=roi,
+                                    passed_liquidity_filter=hedge.passes_liquidity_filter,
+                                    passed_roi_filter=passed_roi_filter,
+                                    was_profitable=was_profitable,
+                                    reject_reason="" if was_profitable else str(hedge.reject_reason or "Outside ROI filter"),
+                                    notes="World Cup BTTS raw check",
+                                    run_id=run_id,
+                                )
+
+                                logger.info(
+                                    f"   [BTTS]   {b['name']:<10} | Buy Poly: {poly_side:<10} ({poly_price:<5}) | Bet Fiat: {fiat_side:<10} ({float(f_opp):<4.2f}) | Status: {'✅ ROI ' + str(roi) + '%' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}"
+                                )
+
+                                if was_profitable:
+                                    opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "Both Teams to Score", poly_side, fiat_side, roi, 0.0, 0.0))
 
                     elif "over" in question or "under" in question or "goals" in question:
                         line_match = re.search(r"(\d+\.5)", question)
-
                         if not line_match:
                             continue
 
                         line = float(line_match.group(1))
-
                         if line not in b.get("totals", {}):
                             continue
 
@@ -427,18 +475,12 @@ def run_soccer() -> None:
                         for idx, out_lbl in enumerate(outs):
                             out_lbl = out_lbl.lower()
                             poly_tok = toks[idx]
-
                             f_opp, poly_side, fiat_side = None, "", ""
 
                             if (out_lbl == "yes" or out_lbl == "over") and fiat_under:
-                                f_opp = fiat_under
-                                poly_side = f"Over {line}"
-                                fiat_side = f"Under {line}"
-
+                                f_opp, poly_side, fiat_side = fiat_under, f"Over {line}", f"Under {line}"
                             elif (out_lbl == "no" or out_lbl == "under") and fiat_over:
-                                f_opp = fiat_over
-                                poly_side = f"Under {line}"
-                                fiat_side = f"Over {line}"
+                                f_opp, poly_side, fiat_side = fiat_over, f"Under {line}", f"Over {line}"
 
                             if f_opp:
                                 book = clients.get_clob_book(poly_tok)
@@ -446,7 +488,6 @@ def run_soccer() -> None:
                                 roi = calculate_roi(hedge)
                                 passed_roi_filter = 0 < roi < 15.0
                                 was_profitable = hedge.passes_liquidity_filter and passed_roi_filter
-
                                 poly_price = f"${float(hedge.best_ask):.2f}" if hedge.best_ask else "N/A"
 
                                 log_raw_detection_to_csv(
@@ -472,32 +513,18 @@ def run_soccer() -> None:
                                     passed_roi_filter=passed_roi_filter,
                                     was_profitable=was_profitable,
                                     reject_reason="" if was_profitable else str(hedge.reject_reason or "Outside ROI filter"),
-                                    notes="Soccer total goals raw check",
+                                    notes="World Cup total goals raw check",
                                     run_id=run_id,
                                 )
 
                                 logger.info(
-                                    f"   [TOT]    {b['name']:<10} | {poly_side[:10]:<10} | Fiat Opp: {float(f_opp):<5.2f} | Poly Ask: {poly_price:<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}"
+                                    f"   [TOT]    {b['name']:<10} | Buy Poly: {poly_side[:10]:<10} ({poly_price:<5}) | Bet Fiat: {fiat_side[:10]:<10} ({float(f_opp):<4.2f}) | Status: {'✅ ROI ' + str(roi) + '%' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}"
                                 )
 
-                                if hedge.passes_liquidity_filter and passed_roi_filter:
-                                    opportunities.append(
-                                        _build_opp(
-                                            x,
-                                            b["name"],
-                                            f_opp,
-                                            hedge,
-                                            f"Total Goals {line}",
-                                            poly_side,
-                                            fiat_side,
-                                            roi,
-                                            0.0,
-                                            0.0,
-                                        )
-                                    )
+                                if was_profitable:
+                                    opportunities.append(_build_opp(x, b["name"], f_opp, hedge, f"Total Goals {line}", poly_side, fiat_side, roi, 0.0, 0.0))
 
         logger.info("\n" + "=" * 80)
-
         final_alerts = build_soccer_global_alerts(opportunities, fiat_opportunities, limit=3)
 
         for msg in final_alerts:
