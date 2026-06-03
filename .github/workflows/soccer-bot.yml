@@ -4,7 +4,7 @@ on:
   schedule:
     # Runs every 2 hours automatically
     - cron: '0 */2 * * *'
-  workflow_dispatch: # Allows you to click "Run workflow" manually in GitHub
+  workflow_dispatch:
 
 jobs:
   run-soccer-sniper:
@@ -12,22 +12,21 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests thefuzz
+          python -m pip install -r requirements.txt
 
       - name: Run Soccer Scanner
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python main_soccer.py
+        run: python main_soccer.py
