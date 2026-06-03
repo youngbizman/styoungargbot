@@ -4,7 +4,7 @@ on:
   schedule:
     # Runs every 2 hours on Thursday, Friday, Saturday, and Sunday
     - cron: '0 */2 * * 4,5,6,0'
-  workflow_dispatch: # Allows you to click "Run workflow" manually in GitHub
+  workflow_dispatch:
 
 jobs:
   run-ufc-sniper:
@@ -12,23 +12,21 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.10' # Or whatever version you use for NBA
+          python-version: '3.10'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests thefuzz
-          # If you have a requirements.txt, you can use: pip install -r requirements.txt
+          python -m pip install -r requirements.txt
 
       - name: Run UFC Scanner
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}  # Corrected name
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python main_ufc.py
+        run: python main_ufc.py
