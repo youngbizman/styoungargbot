@@ -192,7 +192,7 @@ def run_soccer() -> None:
 
         fiat_games = {}
         now_utc = datetime.now(timezone.utc)
-        cutoff_date = now_utc + timedelta(days=45)
+        cutoff_date = now_utc + timedelta(hours=72)
 
         logger.info(f"   [INFO] Odds API returned {len(raw_odds)} World Cup events.")
         logger.info(f"   [INFO] Polymarket returned {len(raw_poly)} active events.")
@@ -203,7 +203,7 @@ def run_soccer() -> None:
                 continue
 
             commence_time = datetime.fromisoformat(commence_raw.replace("Z", "+00:00"))
-            if commence_time > cutoff_date:
+            if commence_time < now_utc or commence_time > cutoff_date:
                 continue
 
             h, a = game.get("home_team"), game.get("away_team")
@@ -246,7 +246,7 @@ def run_soccer() -> None:
                 if b_data["h2h"] or b_data["totals"] or b_data["btts"]:
                     fiat_games[k]["bookies"].append(b_data)
 
-        logger.info(f"   [INFO] Built {len(fiat_games)} fiat World Cup games inside 45-day window.")
+        logger.info(f"   [INFO] Built {len(fiat_games)} fiat World Cup games inside next 72 hours.")
 
         opportunities, fiat_opportunities = [], []
 
